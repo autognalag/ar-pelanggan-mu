@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>WebAR — Google Sheets to GPS AR (Demo)</title>
+  <meta name="description" content="Location-based WebAR that reads a Google Sheet and displays AR markers for rows with latitude/longitude." />
+  
+  <!-- A-Frame & AR.js (location-based) -->
+  <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    #info { position: absolute; left: 10px; top: 10px; z-index: 999; background: rgba(0,0,0,0.4); color: white; padding: 10px; border-radius: 8px; }
+    #loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.6); color: #fff; padding: 12px 16px; border-radius: 8px; }
+    .marker-label { background: rgba(255,255,255,0.9); padding: 6px 8px; border-radius: 6px; font-size: 14px; }
+    a { color: #7ed6df; }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <strong>WebAR + Google Sheets Demo</strong><br>
+    Make your Google Sheet public (or at least "Anyone with the link can view") and set the <code>SHEET_ID</code> below.
+  </div>
+  <div id="loading">Memuat data… (izinkan lokasi & kamera)</div>
+
+  <!-- A-Frame scene with AR.js location support -->
+  <a-scene vr-mode-ui="enabled: false" embedded arjs="sourceType: webcam; debugUIEnabled: false; gpsMinDistance: 1;">
+    <a-entity camera gps-camera rotation-reader></a-entity>
+  </a-scene>
+
+  <script>
+    /****************************************************************
+     * CONFIG
+     * - Masukkan SHEET_ID Google Sheets di bawah ini.
+     * - Sheet harus memiliki kolom header minimal: latitude, longitude, idpel, nama
+     * - Contoh header (case-insensitive): IDPEL, Nama, Latitude, Longitude, Daya, Status
+     ****************************************************************/
+    const SHEET_ID = '1w3RIdvmLUEwGLdCVi8KyWlj3Jj_nMqWloRBWAsaXmqo'; // <-- ganti ini
+    const SHEET_NAME = ''; // optional, kosong = default sheet
+    const MAX_MARKERS = 500; // batasi jumlah marker untuk performa
+
+    // Helper: tampilkan pesan kecil
+    function setLoading(text) {
+      const el = document.getElementById('loading');
+      if (!el) return;
+      el.innerText = text;
+      if (!text) el.style.display = 'none';
+    }
+
+    // Ambil data dari Google Sheets (gviz -> extract JSON)
+    async function fetchSheet(sid, sheetName = ''){
+      const sheetPart = sheetName ? '&sheet=' + encodeURIComponent(sheetName) : '';
+      const url = `https://docs.google.com/spreadsheets/d/${sid}/gviz/tq?tqx=out:json${sheetPart}`;
+      const res = await fetch(url);
+      const txt = await res.text();
+      // google.visualization.Query.setResponse( ... );
+      const m = txt.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);/);
+      if (!m) throw new Error('Format response Google Sheets tidak terduga');
+      const json = JSON.parse(m[1]);
+      const cols = json.table.cols.map(c=> (c.label || '').toLowerCase());
+      const rows = json.table.rows.map(r=> r.c.map(cell => cell ? cell.v : ''));
+      // convert rows to objects using cols
+      const out = rows.map(r=>{
+        const obj = {};
+        for (let i=0;i<cols.length;i++) obj[cols[i]||`col${i}`] = r[i];
+        return obj;
+      });
+      return out;
+    }
+
+    // Create AR marker for a row
+    function createMarker(row, index){
+      const lat = parseFloat(row.latitude || row.lat || row.latitute || row['lat']);
+      const lon = parseFloat(row.longitude || row.lon || row.lng || row['long']);
+      if (!isFinite(lat) || !isFinite(lon)) return null;
+
+      const scene = document.querySelector('a-scene');
+      const entity = document.createElement('a-entity');
+      entity.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lon};`);
+      entity.setAttribute('look-at', '[gps-camera]');
+      entity.setAttribute('scale', '1 1 1');
+
+      // box or icon
+      const box = document.createElement('a-box');
+      box.setAttribute('depth','1');
+      box.setAttribute('height','1');
+      box.setAttribute('width','1');
+      box.setAttribute('position','0 0.5 0');
+      box.setAttribute('opacity','0.8');
+      box.setAttribute('material','color: #ffcc00; opacity: 0.9;');
+
+      // label (2D plane with text)
+      const plane = document.createElement('a-plane');
+      plane.setAttribute('position','0 1.5 0');
+      plane.setAttribute('rotation','0 0 0');
+      plane.setAttribute('width','2');
+      plane.setAttribute('height','0.6');
+      plane.setAttribute('material','color: #ffffff; opacity: 0.9;');
+
+      const text = document.createElement('a-text');
+      const label = `${row.idpel || row.IDPEL || row.id || ''} ${row.nama || row.name || ''}`.trim();
+      text.setAttribute('value', label);
+      text.setAttribute('align','center');
+      text.setAttribute('color','#000');
+      text.setAttribute('width','4');
+      text.setAttribute('position','0 0 0.01');
+
+      plane.appendChild(text);
+      entity.appendChild(box);
+      entity.appendChild(plane);
+
+      // store full data on element for click handler
+      entity.dataset.row = JSON.stringify(row);
+      entity.addEventListener('click', ()=>{
+        const r = JSON.parse(entity.dataset.row);
+        const lines = [];
+        if (r.idpel) lines.push(`IDPEL: ${r.idpel}`);
+        if (r.nama) lines.push(`Nama: ${r.nama}`);
+        if (r.daya) lines.push(`Daya: ${r.daya}`);
+        if (r.status) lines.push(`Status: ${r.status}`);
+        alert(lines.join('\n') || JSON.stringify(r));
+      });
+
+      scene.appendChild(entity);
+      return entity;
+    }
+
+    // Main flow
+    (async function main(){
+      try{
+        if (!SHEET_ID || SHEET_ID === 'PUT_YOUR_SHEET_ID_HERE'){
+          setLoading('Silakan edit file HTML dan masukkan SHEET_ID Google Sheets kamu di variabel SHEET_ID.');
+          return;
+        }
+
+        setLoading('Mengambil data dari Google Sheets...');
+        const rows = await fetchSheet(SHEET_ID, SHEET_NAME);
+        setLoading(`Ditemukan ${rows.length} baris. Membuat marker...`);
+
+        let count = 0;
+        for (let i=0;i<rows.length && count < MAX_MARKERS;i++){
+          const r = rows[i];
+          const m = createMarker(r, i);
+          if (m) count++;
+        }
+
+        setLoading('Selesai. Arahkan kamera ke luar, izinkan lokasi & kamera.');
+        setTimeout(()=> setLoading(''), 1500);
+      }catch(err){
+        console.error(err);
+        setLoading('Error: ' + (err.message||err));
+      }
+    })();
+
+    // small helper to read GPS camera rotation (optional)
+    AFRAME.registerComponent('rotation-reader', {
+      tick: function () {
+        const cam = this.el;
+        // we could read cam.getAttribute('rotation') etc.
+      }
+    });
+  </script>
+
+  <!-- NOTES: 
+    - Cara pakai:
+      1. Copy file ini, ganti SHEET_ID dengan ID Google Sheets kamu.
+      2. Pastikan Google Sheet: Share -> "Anyone with the link" -> Viewer.
+      3. Kolom header harus memiliki latitude & longitude (nama kolom case-insensitive).
+      4. Host file ini (GitHub Pages / Firebase Hosting) atau jalankan simple HTTP server lokal.
+
+    - Batasan:
+      * Parsing Gviz JSON sederhana — kolom dengan koma/line breaks mungkin perlu penanganan lebih robust (CSV parser) untuk produksi.
+      * Performa: batasi jumlah marker (MAX_MARKERS).
+  -->
+</body>
+</html>
